@@ -11,6 +11,62 @@
 //!
 //! Feel free to reach out if you run into any problems or just want to provide some feedback.
 
+extern crate ndarray;
+extern crate rand;
+
+use ndarray::{arr1, Array1};
+use rand::distributions::Standard;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
+
+/// Creates a new vector of length `(vector.len() * range)` and computes the powers of
+/// 2 in `modulus` from range `0` to `range` for each value in `vector`.
+fn powers_of_2(modulus: usize, range: usize, vector: &Array1<usize>) -> Array1<usize> {
+    let vector_vec: Vec<usize> = vector.to_vec();
+    let mut result_vec: Vec<usize> = Vec::with_capacity(vector_vec.len() * range);
+
+    for elem in vector_vec.iter() {
+        for i in 0..range {
+            result_vec.push((elem * (2usize.pow(i as u32))) % modulus);
+        }
+    }
+
+    arr1(&result_vec)
+}
+
+/// Secret Key information (includes the secret key vector).
+pub struct SecretKey {
+    t: Array1<usize>,
+    s: Array1<usize>,
+    v: Array1<usize>,
+}
+
+impl SecretKey {
+    /// Generate a new SecretKey.
+    pub fn new(q: usize, n: usize, l: usize) -> Self {
+        // Init our Rng
+        let mut rng: StdRng = StdRng::from_entropy();
+
+        // t: Randomly generate a vector of length `n` with values in `(mod q)`
+        let t_values: Vec<usize> = (0..n)
+            .map(|_| rng.sample::<usize, Standard>(Standard) % q)
+            .collect();
+        let t = arr1(&t_values);
+
+        // s: Create a vector of length `n + 1`, negate `t` values and add `q (mod q)`, prepend a `1`
+        let mut s_values = Vec::with_capacity(t_values.len() + 1);
+        s_values.push(1);
+        let neg_t_values = t_values.into_iter().map(|t_val| (q - t_val) % q);
+        s_values.extend(neg_t_values);
+        let s = arr1(&s_values);
+
+        // v: Transform `s` via `powers_of_2` function
+        let v = powers_of_2(q, l, &s);
+
+        SecretKey { t, s, v }
+    }
+}
+
 #[allow(non_snake_case)]
 /// Implementation of the [GSW](https://eprint.iacr.org/2013/340.pdf) Homomorphic Encryption scheme.
 pub struct GSW {
@@ -37,24 +93,94 @@ impl GSW {
         let N: usize = (n + 1) * l;
         GSW { q, n, x, m, l, N }
     }
+
+    /// Generate a SecretKey and PublicKey key pair.
+    pub fn keygen(&self) -> SecretKey {
+        let sk = SecretKey::new(self.q, self.n, self.l);
+        sk
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::GSW;
+    use crate::{powers_of_2, GSW};
+    use ndarray::arr1;
 
-    #[test]
-    fn gsw_instance_creation() {
+    fn create_gsw() -> GSW {
         let q = 65536;
         let n = 3;
         let x = 8;
-        let gsw = GSW::new(q, n, x);
+        GSW::new(q, n, x)
+    }
 
-        assert_eq!(gsw.q, q);
-        assert_eq!(gsw.n, n);
-        assert_eq!(gsw.x, x);
+    #[test]
+    fn gsw_instance_creation() {
+        let gsw = create_gsw();
+
+        assert_eq!(gsw.q, 65536);
+        assert_eq!(gsw.n, 3);
+        assert_eq!(gsw.x, 8);
         assert_eq!(gsw.m, 48);
         assert_eq!(gsw.l, 17);
         assert_eq!(gsw.N, 68);
+    }
+
+    #[test]
+    fn gsw_keygen_sk() {
+        let gsw = create_gsw();
+        let sk = gsw.keygen();
+
+        let t = sk.t;
+        let t_vec = t.to_vec();
+        let s = sk.s;
+        let s_vec = s.to_vec();
+        let v = sk.v;
+        let v_vec = v.to_vec();
+
+        // Check the vector shapes
+        assert_eq!(t.shape(), [gsw.n]);
+        assert_eq!(s.shape(), [gsw.n + 1]);
+        assert_eq!(v.shape(), [s.shape()[0] * gsw.l]);
+
+        // `t`
+        // All values in `t` must be positive and in `(mod q)`
+        assert!(t_vec.iter().all(|val| val >= &0 && val <= &gsw.q));
+
+        // `s`
+        // The first value of `s` must be 1
+        assert_eq!(s_vec[0], 1);
+        // All elements of `s` need to be `-t[i] + q (mod q)` (except the first one which is the `1`)
+        assert!(s_vec
+            .iter()
+            .skip(1)
+            .enumerate()
+            .all(|(i, val)| val >= &0 && val == &(gsw.q - t_vec[i])));
+
+        // `v`
+        // The first element must 1 because the first element of `s` is 1 and `1 * (2 ** 0) % q = 1`
+        assert_eq!(v_vec[0], 1);
+        // The "last" computed element for the first value in `s` must be 0 because `1 * (2 ** l - 1) % q = 0`
+        assert_eq!(v_vec[gsw.l - 1], 0);
+        // All values of `v` should be positive and in `(mod q)`
+        assert!(v_vec.iter().all(|val| val >= &0 && val <= &gsw.q));
+    }
+
+    #[test]
+    fn powers_of_two() {
+        let vector_vec = vec![1, 60782, 26640, 17805];
+        let vector = arr1(&vector_vec);
+
+        let result = powers_of_2(65536, 17, &vector);
+        assert_eq!(result.shape(), [68]);
+        assert_eq!(
+            result.to_vec(),
+            vec![
+                1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 0,
+                60782, 56028, 46520, 27504, 55008, 44480, 23424, 46848, 28160, 56320, 47104, 28672,
+                57344, 49152, 32768, 0, 0, 26640, 53280, 41024, 16512, 33024, 512, 1024, 2048,
+                4096, 8192, 16384, 32768, 0, 0, 0, 0, 0, 17805, 35610, 5684, 11368, 22736, 45472,
+                25408, 50816, 36096, 6656, 13312, 26624, 53248, 40960, 16384, 32768, 0
+            ]
+        );
     }
 }
