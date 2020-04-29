@@ -124,22 +124,31 @@ pub struct GSW {
     l: usize,
     /// Automatically computed via `(n + 1) \times l`
     N: usize,
+    /// Automatically generated when instantiated via `new`
+    secret_key: SecretKey,
+    /// Automatically generated when instantiated via `new`
+    public_key: PublicKey,
 }
 
 impl GSW {
     /// Create a new `GSW` instance with the given security parameters.
+    /// **NOTE:** This will automatically generate a `PublicKey` and `SecretKey` key pair.
     pub fn new(q: usize, n: usize, x: usize) -> Self {
         let m: usize = n * (q as f64).log2() as usize; // TODO: Check if `log2` is sufficient here
         let l: usize = (q as f64).log2().floor() as usize + 1;
         let N: usize = (n + 1) * l;
-        GSW { q, n, x, m, l, N }
-    }
-
-    /// Generate a SecretKey and PublicKey key pair.
-    pub fn keygen(&self) -> (SecretKey, PublicKey) {
-        let sk = SecretKey::new(self.q, self.n, self.l);
-        let pk = PublicKey::new(self.q, self.n, self.x, self.m, sk.t.clone());
-        (sk, pk)
+        let secret_key = SecretKey::new(q, n, l);
+        let public_key = PublicKey::new(q, n, x, m, secret_key.t.clone());
+        GSW {
+            q,
+            n,
+            x,
+            m,
+            l,
+            N,
+            secret_key,
+            public_key,
+        }
     }
 }
 
@@ -156,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn gsw_instance_creation() {
+    fn gsw_security_params() {
         let gsw = create_gsw();
 
         assert_eq!(gsw.q, 65536);
@@ -170,13 +179,13 @@ mod tests {
     #[test]
     fn gsw_keygen_sk() {
         let gsw = create_gsw();
-        let (sk, _) = gsw.keygen();
+        let sk = &gsw.secret_key;
 
-        let t = sk.t;
+        let t = sk.t.to_owned();
         let t_vec = t.to_vec();
-        let s = sk.s;
+        let s = sk.s.to_owned();
         let s_vec = s.to_vec();
-        let v = sk.v;
+        let v = sk.v.to_owned();
         let v_vec = v.to_vec();
 
         // Check the vector shapes
@@ -210,15 +219,15 @@ mod tests {
     #[test]
     fn gsw_keygen_pk() {
         let gsw = create_gsw();
-        let (_, pk) = gsw.keygen();
+        let pk = &gsw.public_key;
 
-        let B = pk.B;
+        let B = pk.B.to_owned();
         let B_vec = B.clone().into_raw_vec();
-        let e = pk.e;
+        let e = pk.e.to_owned();
         let e_vec = e.to_vec();
-        let b = pk.b;
+        let b = pk.b.to_owned();
         let b_vec = b.to_vec();
-        let A = pk.A;
+        let A = pk.A.to_owned();
 
         // Check the shapes
         assert_eq!(B.shape(), [gsw.n, gsw.m]);
