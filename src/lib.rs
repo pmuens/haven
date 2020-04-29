@@ -11,10 +11,13 @@
 //!
 //! Feel free to reach out if you run into any problems or just want to provide some feedback.
 
+#![allow(non_snake_case)]
+
+#[macro_use]
 extern crate ndarray;
 extern crate rand;
 
-use ndarray::{arr1, Array1};
+use ndarray::{arr1, stack, Array1, Array2, Axis};
 use rand::distributions::Standard;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -67,7 +70,46 @@ impl SecretKey {
     }
 }
 
-#[allow(non_snake_case)]
+/// Public Key information (includes the public key matrix).
+pub struct PublicKey {
+    B: Array2<usize>,
+    e: Array1<usize>,
+    b: Array1<usize>,
+    A: Array2<usize>,
+}
+
+impl PublicKey {
+    /// Generate a new PublicKey.
+    pub fn new(q: usize, n: usize, _x: usize, m: usize, t: Array1<usize>) -> Self {
+        // Init our Rng
+        let mut rng: StdRng = StdRng::from_entropy();
+
+        // B: Generate an `n x m` matrix of random values in `(mod q)`
+        let B_values: Vec<usize> = (0..n * m)
+            .map(|_| rng.sample::<usize, Standard>(Standard) % q)
+            .collect();
+        let B: Array2<usize> = Array2::from_shape_vec((n, m), B_values).unwrap();
+
+        // e: Randomly generate a vector of length `m` with values in `(mod q)`
+        // TODO: Use `x` to draw random variables from distribution
+        let e_values: Vec<usize> = (0..m)
+            .map(|_| rng.sample::<usize, Standard>(Standard) % q)
+            .collect();
+        let e = arr1(&e_values);
+
+        // b: `b = t dot B + e (mod q)`
+        let b: Array1<usize> = ((t.dot(&B) % q) + &e) % q;
+
+        // A: `A` has `m + 1` rows, the first row is `b`, the rest is `B`
+        // TODO: We need to turn the vector into a matrix so that we can use stacking. Not sure if
+        //  this is the best solution...
+        let b_2d: Array2<usize> = Array2::from_shape_vec((1, m), b.to_vec()).unwrap();
+        let A = stack(Axis(0), &[b_2d.view(), B.view()]).unwrap();
+
+        PublicKey { B, e, b, A }
+    }
+}
+
 /// Implementation of the [GSW](https://eprint.iacr.org/2013/340.pdf) Homomorphic Encryption scheme.
 pub struct GSW {
     /// Modulus
@@ -84,7 +126,6 @@ pub struct GSW {
     N: usize,
 }
 
-#[allow(non_snake_case)]
 impl GSW {
     /// Create a new `GSW` instance with the given security parameters.
     pub fn new(q: usize, n: usize, x: usize) -> Self {
@@ -95,9 +136,10 @@ impl GSW {
     }
 
     /// Generate a SecretKey and PublicKey key pair.
-    pub fn keygen(&self) -> SecretKey {
+    pub fn keygen(&self) -> (SecretKey, PublicKey) {
         let sk = SecretKey::new(self.q, self.n, self.l);
-        sk
+        let pk = PublicKey::new(self.q, self.n, self.x, self.m, sk.t.clone());
+        (sk, pk)
     }
 }
 
@@ -128,7 +170,7 @@ mod tests {
     #[test]
     fn gsw_keygen_sk() {
         let gsw = create_gsw();
-        let sk = gsw.keygen();
+        let (sk, _) = gsw.keygen();
 
         let t = sk.t;
         let t_vec = t.to_vec();
@@ -163,6 +205,44 @@ mod tests {
         assert_eq!(v_vec[gsw.l - 1], 0);
         // All values of `v` should be positive and in `(mod q)`
         assert!(v_vec.iter().all(|val| val >= &0 && val <= &gsw.q));
+    }
+
+    #[test]
+    fn gsw_keygen_pk() {
+        let gsw = create_gsw();
+        let (_, pk) = gsw.keygen();
+
+        let B = pk.B;
+        let B_vec = B.clone().into_raw_vec();
+        let e = pk.e;
+        let e_vec = e.to_vec();
+        let b = pk.b;
+        let b_vec = b.to_vec();
+        let A = pk.A;
+
+        // Check the shapes
+        assert_eq!(B.shape(), [gsw.n, gsw.m]);
+        assert_eq!(e.shape(), [gsw.m]);
+        assert_eq!(b.shape(), [gsw.m]);
+        assert_eq!(A.shape(), [gsw.n + 1, gsw.m]);
+
+        // `B`
+        // All values in `B `should be positive and in `(mod q)`
+        assert!(B_vec.iter().all(|val| val >= &0 && val <= &gsw.q));
+
+        // `e`
+        // All values in `e` should be positive and in `(mod q)`
+        assert!(e_vec.iter().all(|val| val >= &0 && val <= &gsw.q));
+
+        // `b`
+        // All values in `b` should be positive and in `(mod q)`
+        assert!(b_vec.iter().all(|val| val >= &0 && val <= &gsw.q));
+
+        // `A`
+        // The first row should be `b`
+        assert_eq!(A.slice(s![0..1, ..]).to_owned().into_raw_vec(), b_vec);
+        // The last rows should be `B`
+        assert_eq!(A.slice(s![1..gsw.n + 1, ..]).view(), B.view());
     }
 
     #[test]
